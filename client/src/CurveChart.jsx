@@ -1,15 +1,15 @@
 // Hand-drawn SVG chart: zero dependencies, and you learn how scales work.
-// (alt: Recharts, Chart.js, D3 — use them once charts get complex)
+// (alt: Recharts, Chart.js, D3 once charts get complex)
 export default function CurveChart({ curve }) {
   const W = 640,
     H = 320,
-    P = { l: 44, r: 16, t: 16, b: 36 };
+    P = { l: 44, r: 20, t: 20, b: 36 };
   const n = curve.length;
-  // A "scale" maps data values to pixels: x spreads points evenly, y maps score 0.4..1.0 onto the height (flipped: SVG y grows downward).
+  // Scales map data to pixels: x spreads points evenly; y maps 0.4..1.0 onto the height (SVG y grows downward).
   const x = (i) => P.l + (i / (n - 1)) * (W - P.l - P.r);
   const y = (v) => P.t + (1 - (v - 0.4) / 0.6) * (H - P.t - P.b);
   const line = (k) => curve.map((p, i) => `${x(i)},${y(p[k])}`).join(" ");
-  // Shaded polygon between the curves = the generalization gap (the thing a doctor reads first).
+  // Shaded polygon between the curves = the generalization gap, the first thing a "doctor" reads.
   const gap = [
     ...curve.map((p, i) => `${x(i)},${y(p.train)}`),
     ...[...curve].reverse().map((p, i) => `${x(n - 1 - i)},${y(p.dev)}`),
@@ -44,6 +44,12 @@ export default function CurveChart({ curve }) {
       <polygon points={gap} className="gap" />
       <polyline points={line("train")} className="ln train" />
       <polyline points={line("dev")} className="ln dev" />
+      {curve.map((p, i) => (
+        <g key={i}>
+          <circle cx={x(i)} cy={y(p.train)} r="4" className="dot train" />
+          <circle cx={x(i)} cy={y(p.dev)} r="4" className="dot dev" />
+        </g>
+      ))}
     </svg>
   );
 }

@@ -1,8 +1,21 @@
-const router = require('express').Router();
-const multer = require('multer'); // handles multipart/form-data (file uploads); express.json can't
-const fs = require('fs');
-const path = require('path');
-const { Dataset, Diagnosis } = require('./models');
+import { Router } from 'express';
+import multer from 'multer'; // handles multipart/form-data (file uploads); express.json can't
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { z } from 'zod'; // runtime validation: TypeScript types vanish at runtime, Zod checks real incoming data
+import { Dataset, Diagnosis } from './models.js'; // ESM requires the .js extension on local imports
+import { protect } from './middleware.js';
+
+// ESM has no __dirname, so we rebuild it from import.meta.url (the current file's URL)
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const router = Router();
+router.use(protect); // every route below now requires a valid login token
+
+const diagnoseSchema = z.object({
+  datasetId: z.string().regex(/^[a-f\d]{24}$/i, 'Invalid dataset id'), // a MongoDB ObjectId is 24 hex chars
+  target: z.string().min(1, 'Choose a target column'),
+});
 
 const upload = multer({
   storage: multer.diskStorage({
@@ -23,23 +36,26 @@ router.post('/datasets', upload.single('file'), async (req, res, next) => {
     // need a parser (alt: csv-parse, papaparse).
     const columns = lines[0].split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
     if (columns.length < 2 || lines.length < 20) return res.status(422).json({ message: 'Need 2+ columns and 20+ rows' });
-    const ds = await Dataset.create({ name: req.file.originalname, path: req.file.path, columns, rows: lines.length - 1 });
+    const ds = await Dataset.create({ owner: req.user._id, name: req.file.originalname, path: req.file.path, columns, rows: lines.length - 1 });
     res.status(201).json(ds);
   } catch (e) { next(e); }
 });
 
-router.get('/datasets', async (_req, res, next) => {
-  try { res.json(await Dataset.find().sort({ createdAt: -1 })); } catch (e) { next(e); }
+router.get('/datasets', async (req, res, next) => {
+  try { res.json(await Dataset.find({ owner: req.user._id }).sort({ createdAt: -1 })); } catch (e) { next(e); }
 });
 
 // --- Diagnoses --------------------------------------------------------------
 router.post('/diagnoses', async (req, res, next) => {
   try {
-    const { datasetId, target } = req.body;
-    const ds = await Dataset.findById(datasetId);
+    const parsed = diagnoseSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: parsed.error.issues[0].message });
+    const { datasetId, target } = parsed.data;
+    // Ownership check: querying by BOTH _id and owner means you can't use someone else's dataset by guessing its id.
+    const ds = await Dataset.findOne({ _id: datasetId, owner: req.user._id });
     if (!ds) return res.status(404).json({ message: 'Dataset not found' });
     if (!ds.columns.includes(target)) return res.status(400).json({ message: 'Target must be a column of the dataset' });
-    const dx = await Diagnosis.create({ dataset: ds._id, target });
+    const dx = await Diagnosis.create({ owner: req.user._id, dataset: ds._id, target });
     runMock(dx._id);      // NOT awaited on purpose: respond now (202-style), work continues in background
     res.status(201).json(dx); // Phase 3 replaces runMock with: push job to Redis for the Python worker
   } catch (e) { next(e); }
@@ -47,7 +63,7 @@ router.post('/diagnoses', async (req, res, next) => {
 
 router.get('/diagnoses/:id', async (req, res, next) => {
   try {
-    const dx = await Diagnosis.findById(req.params.id);
+    const dx = await Diagnosis.findOne({ _id: req.params.id, owner: req.user._id });
     dx ? res.json(dx) : res.status(404).json({ message: 'Not found' });
   } catch (e) { next(e); }
 });
@@ -82,4 +98,4 @@ async function runMock(id) {
   } catch { await Diagnosis.findByIdAndUpdate(id, { status: 'failed' }); }
 }
 
-module.exports = router;
+export default router;
